@@ -189,4 +189,59 @@ public class Decoder {
     }
     return result;
   }
+
+  /**
+   * Decodes the given data buffer. Allows the caller to specify the expected decompressed length when available.
+   * Ensures that space complexity grows linearly with the expected {@code decompressedLength}.
+   * @param data compressed data buffer to be decoded
+   * @param decompressedLength expected length of the decoded data
+   * @return Array containing the decompressed data
+   * @throws IOException when input data is corrupt or unable to initialize the native brotli decoder
+   * @throws IllegalArgumentException when the expected {@code decompressedLength} is not
+   *          equal to the actual decompressed length
+   */
+  public static byte[] decompress(byte[] data, int decompressedLength) throws IOException {
+    DecoderJNI.Wrapper decoder = new DecoderJNI.Wrapper(data.length);
+    byte[] output = new byte[decompressedLength];
+    int outputRead = 0;
+    try {
+      decoder.getInputBuffer().put(data);
+      decoder.push(data.length);
+      while (decoder.getStatus() != DecoderJNI.Status.DONE) {
+        switch (decoder.getStatus()) {
+        case OK:
+          decoder.push(0);
+          break;
+
+        case NEEDS_MORE_OUTPUT:
+          ByteBuffer buffer = decoder.pull(decompressedLength);
+          int readLen = Math.min(buffer.remaining(), decompressedLength - outputRead);
+          buffer.get(output, outputRead, readLen);
+          outputRead += readLen;
+          if (buffer.remaining() > 0 && outputRead == decompressedLength) {
+            throw new IllegalArgumentException("Output length has exceeded expected length");
+          }
+          break;
+
+        case NEEDS_MORE_INPUT:
+          // Allow decoder to decode any outstanding data from the existing input buffer.
+          decoder.push(0);
+          // If decoder still needs more, input buffer was incomplete.
+          if (decoder.getStatus() == DecoderJNI.Status.NEEDS_MORE_INPUT) {
+            throw new IOException("corrupted input");
+          }
+          break;
+
+        default:
+          throw new IOException("corrupted input");
+        }
+      }
+    } finally {
+      decoder.destroy();
+    }
+    if (outputRead < decompressedLength) {
+      throw new IllegalArgumentException("Output length has less than expected length");
+    }
+    return output;
+  }
 }
